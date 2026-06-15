@@ -40,14 +40,19 @@
 
   .controls{background:var(--surface); border:1px solid var(--grid);
     border-radius:12px 12px 0 0; border-bottom:none; padding:18px 20px;
-    display:flex; flex-wrap:wrap; gap:24px; align-items:flex-start}
+    display:flex; flex-wrap:wrap; gap:22px 28px; align-items:flex-start}
   .ctl-label{font-family:"IBM Plex Mono",monospace; font-size:11px; letter-spacing:.1em;
     text-transform:uppercase; color:var(--muted); margin:0 0 10px}
   .seg{display:inline-flex; border:1px solid var(--grid); border-radius:8px; overflow:hidden}
   .seg button{font-family:Inter,sans-serif; font-size:14px; color:var(--muted);
     background:transparent; border:none; padding:8px 16px; cursor:pointer; transition:all .12s ease}
   .seg button.on{background:var(--teal); color:var(--ink); font-weight:600}
-  .years{flex:1; min-width:280px}
+  .toggle{font-family:Inter,sans-serif; font-size:14px; color:var(--muted); background:transparent;
+    border:1px solid var(--grid); border-radius:8px; padding:8px 14px; cursor:pointer;
+    transition:all .12s ease}
+  .toggle.on{background:var(--amber); color:var(--ink); border-color:var(--amber); font-weight:600}
+  .toggle + .toggle{margin-left:8px}
+  .years{flex:1; min-width:260px}
   .year-head{display:flex; align-items:baseline; justify-content:space-between; gap:12px}
   .quick button{font-family:"IBM Plex Mono",monospace; font-size:11px; background:none;
     border:none; color:var(--muted); cursor:pointer; padding:0 0 0 12px}
@@ -56,7 +61,7 @@
   .pill{display:inline-flex; align-items:center; gap:7px; font-family:"IBM Plex Mono",monospace;
     font-size:13px; color:var(--muted); background:transparent; border:1px solid var(--grid);
     border-radius:999px; padding:5px 12px; cursor:pointer; transition:all .12s ease}
-  .pill .dot{width:9px; height:9px; border-radius:50%; background:var(--grid); transition:background .12s}
+  .pill .dot{width:9px; height:9px; border-radius:50%; background:var(--grid)}
   .pill.on{color:var(--text); border-color:var(--muted)}
   .pill:not(.on){opacity:.55}
   .chart{background:var(--surface); border:1px solid var(--grid); border-radius:0 0 12px 12px; padding:14px}
@@ -75,8 +80,7 @@
 
   {% if state == "ready" %}
   <p class="sub">
-    Overlay years to compare seasonal and daily price shape. Toggle granularity
-    between monthly averages and the average daily (diurnal) shape.
+    Overlay or compare years by seasonal and daily price shape.
     {{ "{:,}".format(meta.intervals) }} settled intervals, {{ meta.start }} to {{ meta.end }}.
   </p>
 
@@ -105,12 +109,15 @@
         <button data-gran="diurnal">Diurnal shape</button>
       </div>
     </div>
+    <div>
+      <p class="ctl-label">Display</p>
+      <button class="toggle" id="cap">Cap at $300</button>
+      <button class="toggle" id="side">Side by side</button>
+    </div>
     <div class="years">
       <div class="year-head">
         <p class="ctl-label">Years</p>
-        <div class="quick">
-          <button id="all">All</button><button id="none">None</button>
-        </div>
+        <div class="quick"><button id="all">All</button><button id="none">None</button></div>
       </div>
       <div class="pills" id="pills"></div>
     </div>
@@ -119,8 +126,8 @@
 
   <p class="foot">
     Source: <a href="https://www.aemo.com.au/energy-systems/electricity/national-electricity-market-nem/data-nem/aggregated-data">AEMO aggregated price &amp; demand</a>.
-    Diurnal times are AEST (the NEM does not observe daylight saving).
-    Partial years (first/last in range) average over the months available.
+    Diurnal times are AEST. <em>Cap at $300</em> caps each interval before averaging
+    (removes the pull of extreme-price intervals). Partial years average over the months available.
   </p>
 
   {% elif state == "empty" %}
@@ -137,59 +144,75 @@
 {% if state == "ready" %}
 <script>
 const PAYLOAD = {{ payload | safe }};
-
-// ---- colour ramp across years: blue (old) -> teal -> amber (recent) ----
-const STOPS = [[59,110,165],[70,179,166],[242,180,65]];
-function ramp(p){
-  if (p<=0) return STOPS[0]; if (p>=1) return STOPS[STOPS.length-1];
-  const x=p*(STOPS.length-1), i=Math.floor(x), f=x-i, a=STOPS[i], b=STOPS[i+1];
-  return [0,1,2].map(k=>Math.round(a[k]+(b[k]-a[k])*f));
-}
 const yrs = PAYLOAD.years;
-const colour = {};
-yrs.forEach((y,i)=> colour[y] = `rgb(${ramp(yrs.length<2?1:i/(yrs.length-1)).join(',')})`);
 
-const state = { gran:"monthly", active:new Set(yrs) };
+// colour ramp: blue (old) -> teal -> amber (recent)
+const STOPS=[[59,110,165],[70,179,166],[242,180,65]];
+function ramp(p){ if(p<=0)return STOPS[0]; if(p>=1)return STOPS[STOPS.length-1];
+  const x=p*(STOPS.length-1),i=Math.floor(x),f=x-i,a=STOPS[i],b=STOPS[i+1];
+  return [0,1,2].map(k=>Math.round(a[k]+(b[k]-a[k])*f)); }
+const colour={};
+yrs.forEach((y,i)=> colour[y]=`rgb(${ramp(yrs.length<2?1:i/(yrs.length-1)).join(',')})`);
 
-const X = {
-  monthly: { vals:[...Array(12).keys()].map(i=>i+1),
-             ticks:[1,2,3,4,5,6,7,8,9,10,11,12], labels:PAYLOAD.months,
-             title:"Month", hover:PAYLOAD.months },
-  diurnal: { vals:[...Array(48).keys()].map(i=>i*0.5),
-             ticks:[0,4,8,12,16,20], labels:["00:00","04:00","08:00","12:00","16:00","20:00"],
-             title:"Time of day (AEST)", hover:PAYLOAD.times }
+const state = { gran:"monthly", capped:false, side:false, active:new Set(yrs) };
+
+const SPAN  = { monthly:12, diurnal:48 };
+const LOCAL = {
+  monthly:{ idx:[...Array(12).keys()], labels:PAYLOAD.months,
+            oTicks:[0,1,2,3,4,5,6,7,8,9,10,11], oLabels:PAYLOAD.months, title:"Month" },
+  diurnal:{ idx:[...Array(48).keys()], labels:PAYLOAD.times,
+            oTicks:[0,8,16,24,32,40], oLabels:["00:00","04:00","08:00","12:00","16:00","20:00"],
+            title:"Time of day (AEST)" }
 };
+const dataKey = ()=> state.gran + (state.capped ? "_capped" : "");
 
-function traces(){
-  const cfg = X[state.gran], data = PAYLOAD[state.gran];
-  return yrs.map(y=>{
-    const recent = (y===yrs[yrs.length-1]);
-    return {
-      type:"scatter", mode:"lines", name:String(y),
-      x:cfg.vals, y:data[String(y)], customdata:cfg.hover,
-      visible: state.active.has(y) ? true : false,
-      line:{color:colour[y], width:recent?2.6:1.5},
-      connectgaps:false,
-      hovertemplate:"%{fullData.name} · %{customdata}<br>$%{y:.0f}/MWh<extra></extra>"
-    };
-  });
+function mkTrace(y, x, yv, hover, visible){
+  const recent = (y===yrs[yrs.length-1]);
+  return { type:"scatter", mode:"lines", name:String(y), x, y:yv, customdata:hover,
+    visible: visible===false ? false : true,
+    line:{color:colour[y], width:recent?2.6:1.5}, connectgaps:false,
+    hovertemplate:"%{fullData.name} · %{customdata}<br>$%{y:.0f}/MWh<extra></extra>" };
 }
-function layout(){
-  const cfg = X[state.gran];
+
+function build(){
+  const span=SPAN[state.gran], loc=LOCAL[state.gran], data=PAYLOAD[dataKey()];
+  const traces=[]; let tickvals=[], ticktext=[];
+  if(state.side){
+    const gap = state.gran==="monthly" ? 1.5 : 4;
+    yrs.filter(y=>state.active.has(y)).forEach((y,k)=>{
+      const base=k*(span+gap);
+      traces.push(mkTrace(y, loc.idx.map(i=>base+i), data[String(y)], loc.labels, true));
+      tickvals.push(base+(span-1)/2); ticktext.push(String(y));
+    });
+  } else {
+    yrs.forEach(y=> traces.push(mkTrace(y, loc.idx, data[String(y)], loc.labels, state.active.has(y))));
+    tickvals=loc.oTicks; ticktext=loc.oLabels;
+  }
+  return {traces, tickvals, ticktext, loc};
+}
+
+function layout(b){
+  const capNote = state.capped ? ", capped $300" : "";
+  const xtitle = state.side
+    ? (state.gran==="monthly" ? "Year (each block Jan–Dec)" : "Year (each block 24h, AEST)")
+    : b.loc.title;
   return {
     paper_bgcolor:"#0E1A2B", plot_bgcolor:"#16263B",
     font:{color:"#E6EEF6", family:"Inter, system-ui, sans-serif"},
-    margin:{l:64,r:24,t:14,b:48}, hovermode:"x unified", showlegend:false, height:520,
-    xaxis:{gridcolor:"#22344A", zeroline:false, color:"#8DA2B8", title:cfg.title,
-           tickmode:"array", tickvals:cfg.ticks, ticktext:cfg.labels},
+    margin:{l:64,r:24,t:14,b:54}, hovermode: state.side ? "closest" : "x unified",
+    showlegend:false, height:520,
+    xaxis:{gridcolor:"#22344A", zeroline:false, color:"#8DA2B8", title:xtitle,
+           tickmode:"array", tickvals:b.tickvals, ticktext:b.ticktext},
     yaxis:{gridcolor:"#22344A", zeroline:false, color:"#8DA2B8",
-           title:"Spot price ($/MWh)", tickprefix:"$"}
+           title:`Spot price ($/MWh${capNote})`, tickprefix:"$"}
   };
 }
-function render(){ Plotly.react("plot", traces(), layout(), {responsive:true, displayModeBar:false}); }
 
-// ---- year pills ----
-const pills = document.getElementById("pills");
+function render(){ const b=build(); Plotly.react("plot", b.traces, layout(b),
+                    {responsive:true, displayModeBar:false}); }
+
+// year pills
+const pills=document.getElementById("pills");
 yrs.forEach(y=>{
   const b=document.createElement("button");
   b.className="pill on"; b.dataset.year=y;
@@ -198,22 +221,21 @@ yrs.forEach(y=>{
                   b.classList.toggle("on", state.active.has(y)); render(); };
   pills.appendChild(b);
 });
-function setAll(on){
-  state.active = on ? new Set(yrs) : new Set();
-  document.querySelectorAll(".pill").forEach(p=>p.classList.toggle("on", on));
-  render();
-}
+function setAll(on){ state.active = on ? new Set(yrs) : new Set();
+  document.querySelectorAll(".pill").forEach(p=>p.classList.toggle("on",on)); render(); }
 document.getElementById("all").onclick=()=>setAll(true);
 document.getElementById("none").onclick=()=>setAll(false);
 
-// ---- granularity ----
+// granularity
 document.querySelectorAll("#gran button").forEach(btn=>{
-  btn.onclick=()=>{
-    state.gran=btn.dataset.gran;
-    document.querySelectorAll("#gran button").forEach(b=>b.classList.toggle("on", b===btn));
-    render();
-  };
+  btn.onclick=()=>{ state.gran=btn.dataset.gran;
+    document.querySelectorAll("#gran button").forEach(b=>b.classList.toggle("on",b===btn)); render(); };
 });
+// display toggles
+document.getElementById("cap").onclick=function(){ state.capped=!state.capped;
+  this.classList.toggle("on",state.capped); render(); };
+document.getElementById("side").onclick=function(){ state.side=!state.side;
+  this.classList.toggle("on",state.side); render(); };
 
 render();
 </script>

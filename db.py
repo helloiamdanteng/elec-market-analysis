@@ -114,11 +114,12 @@ def annual_series(engine: Engine, region: str) -> pd.DataFrame:
 
 
 def monthly_profile(engine: Engine, region: str) -> pd.DataFrame:
-    """Mean RRP per (year, calendar month) — for overlaying years Jan..Dec."""
+    """Mean RRP per (year, calendar month), raw and capped at $300."""
     q = text("""
         SELECT extract(year  FROM settlement)::int AS yr,
                extract(month FROM settlement)::int AS mth,
-               avg(rrp)                            AS mean
+               avg(rrp)                            AS mean,
+               avg(least(rrp, 300))                AS mean_capped
         FROM price_demand WHERE region = :region
         GROUP BY 1, 2 ORDER BY 1, 2
     """)
@@ -127,15 +128,16 @@ def monthly_profile(engine: Engine, region: str) -> pd.DataFrame:
 
 def diurnal_profile(engine: Engine, region: str) -> pd.DataFrame:
     """
-    Mean RRP per (year, minute-of-day) — the average daily shape per year.
-    Settlement times are AEST market time (the NEM does not observe DST),
-    so the diurnal curve is already in local market time.
+    Mean RRP per (year, minute-of-day), raw and capped at $300 — the average
+    daily shape per year. Settlement times are AEST market time (the NEM does
+    not observe DST), so the diurnal curve is already in local market time.
     """
     q = text("""
         SELECT extract(year FROM settlement)::int                              AS yr,
                (extract(hour FROM settlement)*60
                 + extract(minute FROM settlement))::int                        AS minute_of_day,
-               avg(rrp)                                                        AS mean
+               avg(rrp)                                                        AS mean,
+               avg(least(rrp, 300))                                            AS mean_capped
         FROM price_demand WHERE region = :region
         GROUP BY 1, 2 ORDER BY 1, 2
     """)

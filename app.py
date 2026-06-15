@@ -32,29 +32,23 @@ def build_payload(engine, region: str) -> dict:
     months = [calendar.month_abbr[m] for m in range(1, 13)]
     times = [f"{t // 60:02d}:{t % 60:02d}" for t in range(0, 1440, 30)]
 
-    monthly: dict[str, list] = {}
-    for y in years:
-        arr: list = [None] * 12
-        for _, r in mp[mp["yr"] == y].iterrows():
-            arr[int(r["mth"]) - 1] = round(float(r["mean"]), 2)
-        monthly[str(y)] = arr
-
-    diurnal: dict[str, list] = {}
-    for y in years:
-        arr = [None] * 48
-        for _, r in dp[dp["yr"] == y].iterrows():
-            idx = int(r["minute_of_day"]) // 30
-            if 0 <= idx < 48:
-                arr[idx] = round(float(r["mean"]), 2)
-        diurnal[str(y)] = arr
+    def to_arrays(df, idx_col, val_col, n, transform):
+        res: dict[str, list] = {str(y): [None] * n for y in years}
+        for _, r in df.iterrows():
+            i = transform(int(r[idx_col]))
+            if 0 <= i < n:
+                res[str(int(r["yr"]))][i] = round(float(r[val_col]), 2)
+        return res
 
     return {
         "region": region,
         "years": years,
         "months": months,
         "times": times,
-        "monthly": monthly,
-        "diurnal": diurnal,
+        "monthly": to_arrays(mp, "mth", "mean", 12, lambda m: m - 1),
+        "monthly_capped": to_arrays(mp, "mth", "mean_capped", 12, lambda m: m - 1),
+        "diurnal": to_arrays(dp, "minute_of_day", "mean", 48, lambda x: x // 30),
+        "diurnal_capped": to_arrays(dp, "minute_of_day", "mean_capped", 48, lambda x: x // 30),
     }
 
 
