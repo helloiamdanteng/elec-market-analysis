@@ -1,101 +1,70 @@
 """
-NSW electricity spot-price dashboard.
+NEM spot-price dashboard — reads curated price/demand from Postgres.
 
-Serves an interactive 10-year view of the NSW Regional Reference Price
-(the NEM "pool" price) built from AEMO aggregated price & demand data.
+Data is populated by ingest.py (run as a scheduled job on Render). This web
+process only queries aggregates; it never scrapes AEMO.
 
-Run locally:
-    python build_dataset.py        # fetch + cache data first
-    python app.py                  # http://localhost:8000
-
-On Render, build_dataset.py runs as the build step (see render.yaml),
-and gunicorn serves this module.
+Local:
+    export DATABASE_URL=postgresql://user:pass@host:5432/dbname
+    python ingest.py --backfill
+    python app.py            # http://localhost:8000
 """
 
 from __future__ import annotations
 
-import json
 import os
-import pathlib
 
 import pandas as pd
 import plotly.graph_objects as go
-from flask import Flask, render_template
+from flask import Flask, render_template, request
+
+import db
 
 app = Flask(__name__)
-
-DATA_DIR = pathlib.Path(__file__).parent / "data"
-REGION = os.environ.get("REGION", "NSW1")
+DEFAULT_REGION = os.environ.get("REGION", "NSW1")
 
 # Palette — a grid/instrument aesthetic, not a generic dashboard.
-INK = "#0E1A2B"
-SURFACE = "#16263B"
-GRID = "#22344A"
-TEXT = "#E6EEF6"
-MUTED = "#8DA2B8"
-LINE = "#46B3A6"      # monthly mean — teal
-BASELINE = "#F2B441"  # annual mean — amber
-SPIKE = "#E5675C"     # high-price emphasis
+INK, SURFACE, GRID = "#0E1A2B", "#16263B", "#22344A"
+TEXT, MUTED = "#E6EEF6", "#8DA2B8"
+LINE, BASELINE, SPIKE = "#46B3A6", "#F2B441", "#E5675C"
 
 
-def _load(name: str) -> pd.DataFrame:
-    return pd.read_parquet(DATA_DIR / f"{name}_{REGION}.parquet")
-
-
-def has_data() -> bool:
-    return (DATA_DIR / f"monthly_{REGION}.parquet").exists()
-
-
-def build_figure() -> str:
-    monthly = _load("monthly")
-    annual = _load("annual")
+def build_figure(engine, region: str) -> str:
+    monthly = db.monthly_series(engine, region)
+    annual = db.annual_series(engine, region)
 
     fig = go.Figure()
-
-    # Monthly average pool price — the primary series.
     fig.add_trace(go.Scatter(
-        x=monthly.index, y=monthly["mean"],
-        name="Monthly average",
-        mode="lines",
+        x=monthly.index, y=monthly["mean"], name="Monthly average", mode="lines",
         line=dict(color=LINE, width=2),
         hovertemplate="%{x|%b %Y}<br>$%{y:.0f}/MWh<extra></extra>",
-        fill="tozeroy",
-        fillcolor="rgba(70,179,166,0.10)",
+        fill="tozeroy", fillcolor="rgba(70,179,166,0.10)",
     ))
 
-    # Annual average — a calmer baseline to read the trend against.
     step_x, step_y = [], []
     for ts, row in annual.iterrows():
         step_x += [ts, ts + pd.offsets.YearEnd(0)]
         step_y += [row["mean"], row["mean"]]
     fig.add_trace(go.Scatter(
-        x=step_x, y=step_y,
-        name="Annual average",
-        mode="lines",
-        line=dict(color=BASELINE, width=1.5, dash="dot"),
-        hoverinfo="skip",
+        x=step_x, y=step_y, name="Annual average", mode="lines",
+        line=dict(color=BASELINE, width=1.5, dash="dot"), hoverinfo="skip",
     ))
 
-    # Emphasise the worst month so the 2022 energy crisis reads at a glance.
-    peak_ts = monthly["mean"].idxmax()
-    peak_val = float(monthly["mean"].max())
-    fig.add_trace(go.Scatter(
-        x=[peak_ts], y=[peak_val],
-        name="Peak month",
-        mode="markers+text",
-        marker=dict(color=SPIKE, size=9, line=dict(color=INK, width=1.5)),
-        text=[f"  {peak_ts:%b %Y} · ${peak_val:,.0f}"],
-        textposition="middle right",
-        textfont=dict(color=SPIKE, size=12),
-        hoverinfo="skip",
-    ))
+    if not monthly.empty:
+        peak_ts = monthly["mean"].idxmax()
+        peak_val = float(monthly["mean"].max())
+        fig.add_trace(go.Scatter(
+            x=[peak_ts], y=[peak_val], name="Peak month", mode="markers+text",
+            marker=dict(color=SPIKE, size=9, line=dict(color=INK, width=1.5)),
+            text=[f"  {peak_ts:%b %Y} · ${peak_val:,.0f}"],
+            textposition="middle right", textfont=dict(color=SPIKE, size=12),
+            hoverinfo="skip",
+        ))
 
     fig.update_layout(
-        paper_bgcolor=INK,
-        plot_bgcolor=SURFACE,
+        paper_bgcolor=INK, plot_bgcolor=SURFACE,
         font=dict(color=TEXT, family="Inter, system-ui, sans-serif"),
-        margin=dict(l=64, r=28, t=20, b=48),
-        hovermode="x unified",
+        margin=dict(l=64, r=28, t=20, b=48), hovermode="x unified",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0,
                     bgcolor="rgba(0,0,0,0)", font=dict(color=MUTED)),
         xaxis=dict(gridcolor=GRID, zeroline=False, color=MUTED),
@@ -108,15 +77,37 @@ def build_figure() -> str:
 
 @app.route("/")
 def index():
-    if not has_data():
-        return render_template("index.html", ready=False, meta=None, figure=None)
-    meta = json.loads((DATA_DIR / f"meta_{REGION}.json").read_text())
-    return render_template("index.html", ready=True, meta=meta, figure=build_figure())
+    engine = db.get_engine()
+    if engine is None:
+        return render_template("index.html", state="no_db",
+                               region=DEFAULT_REGION, regions=db.REGIONS,
+                               meta=None, figure=None)
+
+    db.init_db(engine)
+    present = db.regions_present(engine)
+    if not present:
+        return render_template("index.html", state="empty",
+                               region=DEFAULT_REGION, regions=db.REGIONS,
+                               meta=None, figure=None)
+
+    region = request.args.get("region", DEFAULT_REGION).upper()
+    if region not in present:
+        region = present[0]
+
+    meta = db.summary(engine, region)
+    return render_template("index.html", state="ready", region=region,
+                           regions=present, meta=meta,
+                           figure=build_figure(engine, region))
 
 
 @app.route("/healthz")
 def healthz():
-    return {"ok": True, "data": has_data(), "region": REGION}
+    engine = db.get_engine()
+    return {
+        "ok": True,
+        "db_configured": engine is not None,
+        "regions": db.regions_present(engine) if engine is not None else [],
+    }
 
 
 if __name__ == "__main__":

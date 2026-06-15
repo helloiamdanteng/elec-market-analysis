@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>NSW Spot Price · 10-Year History</title>
+<title>NEM Spot Price · 10-Year History</title>
 <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -15,63 +15,54 @@
     --amber:#F2B441; --spike:#E5675C;
   }
   *{box-sizing:border-box}
-  body{
-    margin:0; background:var(--ink); color:var(--text);
-    font-family:Inter,system-ui,sans-serif; line-height:1.5;
-    -webkit-font-smoothing:antialiased;
-  }
+  body{margin:0; background:var(--ink); color:var(--text);
+    font-family:Inter,system-ui,sans-serif; line-height:1.5; -webkit-font-smoothing:antialiased}
   .wrap{max-width:1060px; margin:0 auto; padding:48px 24px 64px}
-  .eyebrow{
-    font-family:"IBM Plex Mono",monospace; font-size:12px; letter-spacing:.18em;
-    text-transform:uppercase; color:var(--teal); margin:0 0 10px;
-  }
-  h1{
-    font-family:"Space Grotesk",sans-serif; font-weight:600;
-    font-size:clamp(28px,4.5vw,44px); line-height:1.05; margin:0 0 8px;
-    letter-spacing:-0.01em;
-  }
-  .sub{color:var(--muted); font-size:15px; margin:0 0 32px; max-width:60ch}
-  .stats{
-    display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+  .eyebrow{font-family:"IBM Plex Mono",monospace; font-size:12px; letter-spacing:.18em;
+    text-transform:uppercase; color:var(--teal); margin:0 0 10px}
+  h1{font-family:"Space Grotesk",sans-serif; font-weight:600;
+    font-size:clamp(28px,4.5vw,44px); line-height:1.05; margin:0 0 8px; letter-spacing:-0.01em}
+  .sub{color:var(--muted); font-size:15px; margin:0 0 28px; max-width:62ch}
+  .regions{display:flex; flex-wrap:wrap; gap:8px; margin:0 0 28px}
+  .regions a{font-family:"IBM Plex Mono",monospace; font-size:13px; text-decoration:none;
+    color:var(--muted); border:1px solid var(--grid); border-radius:999px;
+    padding:6px 14px; transition:all .15s ease}
+  .regions a:hover{color:var(--text); border-color:var(--muted)}
+  .regions a.on{color:var(--ink); background:var(--teal); border-color:var(--teal); font-weight:600}
+  .stats{display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
     gap:1px; background:var(--grid); border:1px solid var(--grid);
-    border-radius:10px; overflow:hidden; margin:0 0 28px;
-  }
+    border-radius:10px; overflow:hidden; margin:0 0 28px}
   .stat{background:var(--surface); padding:18px 20px}
   .stat .k{font-family:"IBM Plex Mono",monospace; font-size:11px; letter-spacing:.1em;
     text-transform:uppercase; color:var(--muted); margin:0 0 6px}
   .stat .v{font-family:"Space Grotesk",sans-serif; font-size:24px; font-weight:600}
   .stat .v small{font-size:13px; color:var(--muted); font-weight:500}
   .stat.accent .v{color:var(--spike)}
-  .chart{
-    background:var(--surface); border:1px solid var(--grid);
-    border-radius:12px; padding:14px;
-  }
+  .chart{background:var(--surface); border:1px solid var(--grid); border-radius:12px; padding:14px}
   #plot{width:100%}
   .foot{color:var(--muted); font-size:13px; margin-top:20px}
   .foot a{color:var(--teal)}
-  .empty{
-    background:var(--surface); border:1px dashed var(--grid);
-    border-radius:12px; padding:40px; text-align:left;
-  }
-  .empty code{
-    font-family:"IBM Plex Mono",monospace; background:var(--ink);
-    padding:2px 7px; border-radius:5px; color:var(--amber); font-size:13px;
-  }
-  @media (prefers-reduced-motion: no-preference){
-    .stat{transition:transform .15s ease}
-  }
+  .panel{background:var(--surface); border:1px dashed var(--grid); border-radius:12px; padding:36px}
+  .panel code{font-family:"IBM Plex Mono",monospace; background:var(--ink);
+    padding:2px 7px; border-radius:5px; color:var(--amber); font-size:13px}
 </style>
 </head>
 <body>
 <div class="wrap">
-  <p class="eyebrow">{{ meta.region if ready else "NSW1" }} · NEM Regional Reference Price</p>
-  <h1>NSW electricity spot price</h1>
+  <p class="eyebrow">{{ region }} · NEM Regional Reference Price</p>
+  <h1>NEM electricity spot price</h1>
 
-  {% if ready %}
+  {% if state == "ready" %}
   <p class="sub">
-    Half-hourly pool price ($/MWh) from AEMO, aggregated over a ten-year window.
+    Half-hourly pool price ($/MWh) from AEMO over a ten-year window —
     {{ "{:,}".format(meta.intervals) }} settled intervals, {{ meta.start }} to {{ meta.end }}.
   </p>
+
+  <nav class="regions">
+    {% for r in regions %}
+      <a href="/?region={{ r }}" class="{{ 'on' if r == region else '' }}">{{ r }}</a>
+    {% endfor %}
+  </nav>
 
   <div class="stats">
     <div class="stat">
@@ -96,27 +87,33 @@
 
   <p class="foot">
     Source: <a href="https://www.aemo.com.au/energy-systems/electricity/national-electricity-market-nem/data-nem/aggregated-data">AEMO aggregated price &amp; demand</a>.
-    RRP is the price used for spot-market settlement. Highest single interval in window: ${{ "{:,.0f}".format(meta.max_interval) }}/MWh.
+    Highest single interval in window: ${{ "{:,.0f}".format(meta.max_interval) }}/MWh.
   </p>
+
+  {% elif state == "empty" %}
+  <p class="sub">The database is connected but holds no data yet.</p>
+  <div class="panel">
+    <p>Run the backfill once to load ten years across all regions:</p>
+    <p><code>python ingest.py --backfill</code></p>
+    <p style="color:var(--muted);margin-bottom:0">On Render, trigger the
+      <code>ingest</code> job, then reload. The daily schedule keeps it current after that.</p>
+  </div>
+
   {% else %}
-  <p class="sub">The dashboard has no data cached yet.</p>
-  <div class="empty">
-    <p>Build the dataset first, then restart:</p>
-    <p><code>python build_dataset.py</code></p>
-    <p style="color:var(--muted);margin-bottom:0">
-      On Render this runs automatically as the build step. Locally it fetches
-      ~120 monthly files from AEMO and caches them under <code>data/</code>.
-    </p>
+  <p class="sub">No database is configured.</p>
+  <div class="panel">
+    <p>Set <code>DATABASE_URL</code> to a Postgres instance, then load data:</p>
+    <p><code>python ingest.py --backfill</code></p>
+    <p style="color:var(--muted);margin-bottom:0">On Render, attach the Postgres
+      instance from <code>render.yaml</code> — the URL is injected automatically.</p>
   </div>
   {% endif %}
 </div>
 
-{% if ready %}
+{% if state == "ready" %}
 <script>
   const fig = {{ figure | safe }};
-  Plotly.newPlot("plot", fig.data, fig.layout, {
-    responsive:true, displayModeBar:false
-  });
+  Plotly.newPlot("plot", fig.data, fig.layout, {responsive:true, displayModeBar:false});
 </script>
 {% endif %}
 </body>
