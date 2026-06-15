@@ -113,6 +113,35 @@ def annual_series(engine: Engine, region: str) -> pd.DataFrame:
     return df.set_index("bucket")
 
 
+def monthly_profile(engine: Engine, region: str) -> pd.DataFrame:
+    """Mean RRP per (year, calendar month) — for overlaying years Jan..Dec."""
+    q = text("""
+        SELECT extract(year  FROM settlement)::int AS yr,
+               extract(month FROM settlement)::int AS mth,
+               avg(rrp)                            AS mean
+        FROM price_demand WHERE region = :region
+        GROUP BY 1, 2 ORDER BY 1, 2
+    """)
+    return pd.read_sql(q, engine, params={"region": region})
+
+
+def diurnal_profile(engine: Engine, region: str) -> pd.DataFrame:
+    """
+    Mean RRP per (year, minute-of-day) — the average daily shape per year.
+    Settlement times are AEST market time (the NEM does not observe DST),
+    so the diurnal curve is already in local market time.
+    """
+    q = text("""
+        SELECT extract(year FROM settlement)::int                              AS yr,
+               (extract(hour FROM settlement)*60
+                + extract(minute FROM settlement))::int                        AS minute_of_day,
+               avg(rrp)                                                        AS mean
+        FROM price_demand WHERE region = :region
+        GROUP BY 1, 2 ORDER BY 1, 2
+    """)
+    return pd.read_sql(q, engine, params={"region": region})
+
+
 def summary(engine: Engine, region: str) -> dict:
     q = text("""
         SELECT min(settlement)                          AS start,

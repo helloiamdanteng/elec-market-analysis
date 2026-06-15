@@ -1,21 +1,21 @@
 """
-NEM spot-price dashboard — reads curated price/demand from Postgres.
+NEM spot-price dashboard — interactive year/granularity profiles from Postgres.
 
-Data is populated by ingest.py (run as a scheduled job on Render). This web
-process only queries aggregates; it never scrapes AEMO.
+Two views, both overlaying years on a shared axis:
+  * Monthly  — 12 monthly averages per year (Jan..Dec)
+  * Diurnal  — 48 half-hourly averages per year (avg price by time of day, AEST)
 
-Local:
-    export DATABASE_URL=postgresql://user:pass@host:5432/dbname
-    python ingest.py --backfill
-    python app.py            # http://localhost:8000
+Profiles for every year are computed in SQL and sent to the browser as one
+compact JSON payload; year toggles and the granularity switch are handled
+client-side, so interaction needs no server round-trips. Region change reloads.
 """
 
 from __future__ import annotations
 
+import calendar
+import json
 import os
 
-import pandas as pd
-import plotly.graph_objects as go
 from flask import Flask, render_template, request
 
 import db
@@ -23,56 +23,39 @@ import db
 app = Flask(__name__)
 DEFAULT_REGION = os.environ.get("REGION", "NSW1")
 
-# Palette — a grid/instrument aesthetic, not a generic dashboard.
-INK, SURFACE, GRID = "#0E1A2B", "#16263B", "#22344A"
-TEXT, MUTED = "#E6EEF6", "#8DA2B8"
-LINE, BASELINE, SPIKE = "#46B3A6", "#F2B441", "#E5675C"
 
+def build_payload(engine, region: str) -> dict:
+    mp = db.monthly_profile(engine, region)
+    dp = db.diurnal_profile(engine, region)
 
-def build_figure(engine, region: str) -> str:
-    monthly = db.monthly_series(engine, region)
-    annual = db.annual_series(engine, region)
+    years = sorted({int(y) for y in mp["yr"]} | {int(y) for y in dp["yr"]})
+    months = [calendar.month_abbr[m] for m in range(1, 13)]
+    times = [f"{t // 60:02d}:{t % 60:02d}" for t in range(0, 1440, 30)]
 
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=monthly.index, y=monthly["mean"], name="Monthly average", mode="lines",
-        line=dict(color=LINE, width=2),
-        hovertemplate="%{x|%b %Y}<br>$%{y:.0f}/MWh<extra></extra>",
-        fill="tozeroy", fillcolor="rgba(70,179,166,0.10)",
-    ))
+    monthly: dict[str, list] = {}
+    for y in years:
+        arr: list = [None] * 12
+        for _, r in mp[mp["yr"] == y].iterrows():
+            arr[int(r["mth"]) - 1] = round(float(r["mean"]), 2)
+        monthly[str(y)] = arr
 
-    step_x, step_y = [], []
-    for ts, row in annual.iterrows():
-        step_x += [ts, ts + pd.offsets.YearEnd(0)]
-        step_y += [row["mean"], row["mean"]]
-    fig.add_trace(go.Scatter(
-        x=step_x, y=step_y, name="Annual average", mode="lines",
-        line=dict(color=BASELINE, width=1.5, dash="dot"), hoverinfo="skip",
-    ))
+    diurnal: dict[str, list] = {}
+    for y in years:
+        arr = [None] * 48
+        for _, r in dp[dp["yr"] == y].iterrows():
+            idx = int(r["minute_of_day"]) // 30
+            if 0 <= idx < 48:
+                arr[idx] = round(float(r["mean"]), 2)
+        diurnal[str(y)] = arr
 
-    if not monthly.empty:
-        peak_ts = monthly["mean"].idxmax()
-        peak_val = float(monthly["mean"].max())
-        fig.add_trace(go.Scatter(
-            x=[peak_ts], y=[peak_val], name="Peak month", mode="markers+text",
-            marker=dict(color=SPIKE, size=9, line=dict(color=INK, width=1.5)),
-            text=[f"  {peak_ts:%b %Y} · ${peak_val:,.0f}"],
-            textposition="middle right", textfont=dict(color=SPIKE, size=12),
-            hoverinfo="skip",
-        ))
-
-    fig.update_layout(
-        paper_bgcolor=INK, plot_bgcolor=SURFACE,
-        font=dict(color=TEXT, family="Inter, system-ui, sans-serif"),
-        margin=dict(l=64, r=28, t=20, b=48), hovermode="x unified",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0,
-                    bgcolor="rgba(0,0,0,0)", font=dict(color=MUTED)),
-        xaxis=dict(gridcolor=GRID, zeroline=False, color=MUTED),
-        yaxis=dict(gridcolor=GRID, zeroline=False, color=MUTED,
-                   title="Spot price ($/MWh)", tickprefix="$"),
-        height=520,
-    )
-    return fig.to_json()
+    return {
+        "region": region,
+        "years": years,
+        "months": months,
+        "times": times,
+        "monthly": monthly,
+        "diurnal": diurnal,
+    }
 
 
 @app.route("/")
@@ -81,23 +64,24 @@ def index():
     if engine is None:
         return render_template("index.html", state="no_db",
                                region=DEFAULT_REGION, regions=db.REGIONS,
-                               meta=None, figure=None)
+                               meta=None, payload=None)
 
     db.init_db(engine)
     present = db.regions_present(engine)
     if not present:
         return render_template("index.html", state="empty",
                                region=DEFAULT_REGION, regions=db.REGIONS,
-                               meta=None, figure=None)
+                               meta=None, payload=None)
 
     region = request.args.get("region", DEFAULT_REGION).upper()
     if region not in present:
         region = present[0]
 
     meta = db.summary(engine, region)
+    payload = build_payload(engine, region)
     return render_template("index.html", state="ready", region=region,
                            regions=present, meta=meta,
-                           figure=build_figure(engine, region))
+                           payload=json.dumps(payload))
 
 
 @app.route("/healthz")
