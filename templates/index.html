@@ -43,15 +43,12 @@
     display:flex; flex-wrap:wrap; gap:22px 28px; align-items:flex-start}
   .ctl-label{font-family:"IBM Plex Mono",monospace; font-size:11px; letter-spacing:.1em;
     text-transform:uppercase; color:var(--muted); margin:0 0 10px}
-  .seg{display:inline-flex; border:1px solid var(--grid); border-radius:8px; overflow:hidden}
-  .seg button{font-family:Inter,sans-serif; font-size:14px; color:var(--muted);
-    background:transparent; border:none; padding:8px 16px; cursor:pointer; transition:all .12s ease}
-  .seg button.on{background:var(--teal); color:var(--ink); font-weight:600}
   .toggle{font-family:Inter,sans-serif; font-size:14px; color:var(--muted); background:transparent;
     border:1px solid var(--grid); border-radius:8px; padding:8px 14px; cursor:pointer;
     transition:all .12s ease}
-  .toggle.on{background:var(--amber); color:var(--ink); border-color:var(--amber); font-weight:600}
   .toggle + .toggle{margin-left:8px}
+  .toggle.on{background:var(--amber); color:var(--ink); border-color:var(--amber); font-weight:600}
+  .toggle.alt.on{background:var(--teal); border-color:var(--teal)}
   .years{flex:1; min-width:260px}
   .year-head{display:flex; align-items:baseline; justify-content:space-between; gap:12px}
   .quick button{font-family:"IBM Plex Mono",monospace; font-size:11px; background:none;
@@ -80,7 +77,7 @@
 
   {% if state == "ready" %}
   <p class="sub">
-    Overlay or compare years by seasonal and daily price shape.
+    Break price down by month and/or time of day, across years.
     {{ "{:,}".format(meta.intervals) }} settled intervals, {{ meta.start }} to {{ meta.end }}.
   </p>
 
@@ -103,11 +100,9 @@
 
   <div class="controls">
     <div>
-      <p class="ctl-label">Granularity</p>
-      <div class="seg" id="gran">
-        <button data-gran="monthly" class="on">Monthly</button>
-        <button data-gran="diurnal">Diurnal shape</button>
-      </div>
+      <p class="ctl-label">Breakdown</p>
+      <button class="toggle alt" id="monthly">Monthly</button>
+      <button class="toggle alt" id="diurnal">Diurnal</button>
     </div>
     <div>
       <p class="ctl-label">Display</p>
@@ -126,8 +121,8 @@
 
   <p class="foot">
     Source: <a href="https://www.aemo.com.au/energy-systems/electricity/national-electricity-market-nem/data-nem/aggregated-data">AEMO aggregated price &amp; demand</a>.
-    Diurnal times are AEST. <em>Cap at $300</em> caps each interval before averaging
-    (removes the pull of extreme-price intervals). Partial years average over the months available.
+    <em>Monthly</em> + <em>Diurnal</em> together show each month's daily shape; neither shows the annual average.
+    Diurnal times are AEST. <em>Cap at $300</em> caps each interval before averaging.
   </p>
 
   {% elif state == "empty" %}
@@ -144,7 +139,7 @@
 {% if state == "ready" %}
 <script>
 const PAYLOAD = {{ payload | safe }};
-const yrs = PAYLOAD.years;
+const yrs = PAYLOAD.years, months = PAYLOAD.months, times = PAYLOAD.times;
 
 // colour ramp: blue (old) -> teal -> amber (recent)
 const STOPS=[[59,110,165],[70,179,166],[242,180,65]];
@@ -154,60 +149,98 @@ function ramp(p){ if(p<=0)return STOPS[0]; if(p>=1)return STOPS[STOPS.length-1];
 const colour={};
 yrs.forEach((y,i)=> colour[y]=`rgb(${ramp(yrs.length<2?1:i/(yrs.length-1)).join(',')})`);
 
-const state = { gran:"monthly", capped:false, side:false, active:new Set(yrs) };
+// defaults: monthly on, diurnal off, capped on, side-by-side on
+const state = { monthly:true, diurnal:false, capped:true, side:true, active:new Set(yrs) };
 
-const SPAN  = { monthly:12, diurnal:48 };
-const LOCAL = {
-  monthly:{ idx:[...Array(12).keys()], labels:PAYLOAD.months,
-            oTicks:[0,1,2,3,4,5,6,7,8,9,10,11], oLabels:PAYLOAD.months, title:"Month" },
-  diurnal:{ idx:[...Array(48).keys()], labels:PAYLOAD.times,
-            oTicks:[0,8,16,24,32,40], oLabels:["00:00","04:00","08:00","12:00","16:00","20:00"],
-            title:"Time of day (AEST)" }
-};
-const dataKey = ()=> state.gran + (state.capped ? "_capped" : "");
+const GM = 6;   // gap between month blocks when both breakdowns on
+function suf(base){ return base + (state.capped ? "_capped" : ""); }
 
-function mkTrace(y, x, yv, hover, visible){
+// per-year layout in local coords (starting at 0): returns {xs, ys, labels, width}
+function layoutYear(y){
+  const m=state.monthly, d=state.diurnal, xs=[], ys=[], labels=[];
+  if(m && d){
+    const md = PAYLOAD[suf("md")][String(y)];
+    for(let mo=0; mo<12; mo++){
+      const base = mo*(48+GM);
+      for(let t=0;t<48;t++){ xs.push(base+t); ys.push(md[mo][t]); labels.push(`${months[mo]} ${times[t]}`); }
+      if(mo<11){ xs.push(base+48); ys.push(null); labels.push(""); }   // break line between months
+    }
+    return {xs,ys,labels,width:11*(48+GM)+47};
+  }
+  if(m && !d){
+    const arr = PAYLOAD[suf("monthly")][String(y)];
+    for(let mo=0;mo<12;mo++){ xs.push(mo); ys.push(arr[mo]); labels.push(months[mo]); }
+    return {xs,ys,labels,width:11};
+  }
+  if(!m && d){
+    const arr = PAYLOAD[suf("diurnal")][String(y)];
+    for(let t=0;t<48;t++){ xs.push(t); ys.push(arr[t]); labels.push(times[t]); }
+    return {xs,ys,labels,width:47};
+  }
+  // neither: single annual average
+  return {xs:[0], ys:[PAYLOAD[suf("annual")][String(y)]], labels:["Average"], width:0};
+}
+
+function yearGap(){
+  const m=state.monthly, d=state.diurnal;
+  if(m && d) return 30; if(m) return 1.5; if(d) return 4; return 1;
+}
+function mode(){ return (!state.monthly && !state.diurnal) ? "markers" : "lines"; }
+
+function mkTrace(y, xs, ys, labels, visible){
   const recent = (y===yrs[yrs.length-1]);
-  return { type:"scatter", mode:"lines", name:String(y), x, y:yv, customdata:hover,
-    visible: visible===false ? false : true,
-    line:{color:colour[y], width:recent?2.6:1.5}, connectgaps:false,
+  return { type:"scatter", mode:mode(), name:String(y), x:xs, y:ys, customdata:labels,
+    visible: visible===false ? false : true, connectgaps:false,
+    line:{color:colour[y], width:recent?2.6:1.5}, marker:{color:colour[y], size:7},
     hovertemplate:"%{fullData.name} · %{customdata}<br>$%{y:.0f}/MWh<extra></extra>" };
 }
 
+// overlay ticks depend on the breakdown combo
+function overlayTicks(){
+  const m=state.monthly, d=state.diurnal;
+  if(m && d){ const tv=[],tt=[]; for(let mo=0;mo<12;mo++){ tv.push(mo*(48+GM)+23.5); tt.push(months[mo]); } return {tv,tt}; }
+  if(m) return {tv:[...Array(12).keys()], tt:months};
+  if(d) return {tv:[0,8,16,24,32,40], tt:["00:00","04:00","08:00","12:00","16:00","20:00"]};
+  return {tv:[0], tt:["Average"]};
+}
+function xTitle(){
+  const m=state.monthly, d=state.diurnal;
+  if(state.side) return "Year";
+  if(m && d) return "Month → time of day (AEST)";
+  if(m) return "Month"; if(d) return "Time of day (AEST)"; return "";
+}
+
 function build(){
-  const span=SPAN[state.gran], loc=LOCAL[state.gran], data=PAYLOAD[dataKey()];
   const traces=[]; let tickvals=[], ticktext=[];
   if(state.side){
-    const gap = state.gran==="monthly" ? 1.5 : 4;
-    yrs.filter(y=>state.active.has(y)).forEach((y,k)=>{
-      const base=k*(span+gap);
-      traces.push(mkTrace(y, loc.idx.map(i=>base+i), data[String(y)], loc.labels, true));
-      tickvals.push(base+(span-1)/2); ticktext.push(String(y));
+    const gap=yearGap();
+    let cursor=0;
+    yrs.filter(y=>state.active.has(y)).forEach(y=>{
+      const L=layoutYear(y);
+      traces.push(mkTrace(y, L.xs.map(x=>x+cursor), L.ys, L.labels, true));
+      tickvals.push(cursor + L.width/2); ticktext.push(String(y));
+      cursor += L.width + gap;
     });
   } else {
-    yrs.forEach(y=> traces.push(mkTrace(y, loc.idx, data[String(y)], loc.labels, state.active.has(y))));
-    tickvals=loc.oTicks; ticktext=loc.oLabels;
+    yrs.forEach(y=>{ const L=layoutYear(y); traces.push(mkTrace(y, L.xs, L.ys, L.labels, state.active.has(y))); });
+    const t=overlayTicks(); tickvals=t.tv; ticktext=t.tt;
   }
-  return {traces, tickvals, ticktext, loc};
+  return {traces, tickvals, ticktext};
 }
 
 function layout(b){
   const capNote = state.capped ? ", capped $300" : "";
-  const xtitle = state.side
-    ? (state.gran==="monthly" ? "Year (each block Jan–Dec)" : "Year (each block 24h, AEST)")
-    : b.loc.title;
   return {
     paper_bgcolor:"#0E1A2B", plot_bgcolor:"#16263B",
     font:{color:"#E6EEF6", family:"Inter, system-ui, sans-serif"},
     margin:{l:64,r:24,t:14,b:54}, hovermode: state.side ? "closest" : "x unified",
     showlegend:false, height:520,
-    xaxis:{gridcolor:"#22344A", zeroline:false, color:"#8DA2B8", title:xtitle,
+    xaxis:{gridcolor:"#22344A", zeroline:false, color:"#8DA2B8", title:xTitle(),
            tickmode:"array", tickvals:b.tickvals, ticktext:b.ticktext},
     yaxis:{gridcolor:"#22344A", zeroline:false, color:"#8DA2B8",
            title:`Spot price ($/MWh${capNote})`, tickprefix:"$"}
   };
 }
-
 function render(){ const b=build(); Plotly.react("plot", b.traces, layout(b),
                     {responsive:true, displayModeBar:false}); }
 
@@ -226,16 +259,11 @@ function setAll(on){ state.active = on ? new Set(yrs) : new Set();
 document.getElementById("all").onclick=()=>setAll(true);
 document.getElementById("none").onclick=()=>setAll(false);
 
-// granularity
-document.querySelectorAll("#gran button").forEach(btn=>{
-  btn.onclick=()=>{ state.gran=btn.dataset.gran;
-    document.querySelectorAll("#gran button").forEach(b=>b.classList.toggle("on",b===btn)); render(); };
-});
-// display toggles
-document.getElementById("cap").onclick=function(){ state.capped=!state.capped;
-  this.classList.toggle("on",state.capped); render(); };
-document.getElementById("side").onclick=function(){ state.side=!state.side;
-  this.classList.toggle("on",state.side); render(); };
+// toggles
+function wire(id, key){ const el=document.getElementById(id);
+  if(state[key]) el.classList.add("on");
+  el.onclick=function(){ state[key]=!state[key]; this.classList.toggle("on",state[key]); render(); }; }
+wire("monthly","monthly"); wire("diurnal","diurnal"); wire("cap","capped"); wire("side","side");
 
 render();
 </script>

@@ -144,6 +144,36 @@ def diurnal_profile(engine: Engine, region: str) -> pd.DataFrame:
     return pd.read_sql(q, engine, params={"region": region})
 
 
+def annual_profile(engine: Engine, region: str) -> pd.DataFrame:
+    """One mean per year, raw and capped — for the 'neither toggle' view."""
+    q = text("""
+        SELECT extract(year FROM settlement)::int AS yr,
+               avg(rrp)             AS mean,
+               avg(least(rrp, 300)) AS mean_capped
+        FROM price_demand WHERE region = :region
+        GROUP BY 1 ORDER BY 1
+    """)
+    return pd.read_sql(q, engine, params={"region": region})
+
+
+def month_diurnal_profile(engine: Engine, region: str) -> pd.DataFrame:
+    """
+    Mean RRP per (year, month, minute-of-day), raw and capped — the daily shape
+    within each month. Powers the 'both toggles on' view (~6k rows over a decade).
+    """
+    q = text("""
+        SELECT extract(year  FROM settlement)::int AS yr,
+               extract(month FROM settlement)::int AS mth,
+               (extract(hour FROM settlement)*60
+                + extract(minute FROM settlement))::int AS minute_of_day,
+               avg(rrp)             AS mean,
+               avg(least(rrp, 300)) AS mean_capped
+        FROM price_demand WHERE region = :region
+        GROUP BY 1, 2, 3 ORDER BY 1, 2, 3
+    """)
+    return pd.read_sql(q, engine, params={"region": region})
+
+
 def summary(engine: Engine, region: str) -> dict:
     q = text("""
         SELECT min(settlement)                          AS start,

@@ -27,8 +27,13 @@ DEFAULT_REGION = os.environ.get("REGION", "NSW1")
 def build_payload(engine, region: str) -> dict:
     mp = db.monthly_profile(engine, region)
     dp = db.diurnal_profile(engine, region)
+    ap = db.annual_profile(engine, region)
+    mdp = db.month_diurnal_profile(engine, region)
 
-    years = sorted({int(y) for y in mp["yr"]} | {int(y) for y in dp["yr"]})
+    years = sorted(
+        {int(y) for y in mp["yr"]} | {int(y) for y in dp["yr"]}
+        | {int(y) for y in ap["yr"]} | {int(y) for y in mdp["yr"]}
+    )
     months = [calendar.month_abbr[m] for m in range(1, 13)]
     times = [f"{t // 60:02d}:{t % 60:02d}" for t in range(0, 1440, 30)]
 
@@ -40,15 +45,31 @@ def build_payload(engine, region: str) -> dict:
                 res[str(int(r["yr"]))][i] = round(float(r[val_col]), 2)
         return res
 
+    def annual_map(col):
+        return {str(int(r["yr"])): round(float(r[col]), 2) for _, r in ap.iterrows()}
+
+    def md_arrays(col):
+        res: dict[str, list] = {str(y): [[None] * 48 for _ in range(12)] for y in years}
+        for _, r in mdp.iterrows():
+            mo = int(r["mth"]) - 1
+            t = int(r["minute_of_day"]) // 30
+            if 0 <= mo < 12 and 0 <= t < 48:
+                res[str(int(r["yr"]))][mo][t] = round(float(r[col]), 2)
+        return res
+
     return {
         "region": region,
         "years": years,
         "months": months,
         "times": times,
+        "annual": annual_map("mean"),
+        "annual_capped": annual_map("mean_capped"),
         "monthly": to_arrays(mp, "mth", "mean", 12, lambda m: m - 1),
         "monthly_capped": to_arrays(mp, "mth", "mean_capped", 12, lambda m: m - 1),
         "diurnal": to_arrays(dp, "minute_of_day", "mean", 48, lambda x: x // 30),
         "diurnal_capped": to_arrays(dp, "minute_of_day", "mean_capped", 48, lambda x: x // 30),
+        "md": md_arrays("mean"),
+        "md_capped": md_arrays("mean_capped"),
     }
 
 
